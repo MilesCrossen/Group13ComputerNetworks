@@ -1,81 +1,101 @@
+// SERVER IS THE ROVER, WHICH AWAITS REQUESTS FROM CLIENT
+
 #include <iostream>
-#include <cstring>
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <ctime> // For timestamps + srand seeding
-#include <cstdlib> // Rand rock type
+#include <cstring> // C-style strings
+#include <winsock2.h>// Windows-specific socket library
+#include <ws2tcpip.h> // TCP/IP utilities add-on
+#include <ctime> // For timestamps + seeding
+#include <cstdlib> // For RNG
+#include <thread> // For parallel connection
 
-#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "ws2_32.lib") //Link Winsock library for networking
 
-#define PORT 12345
-#define BUFFER_SIZE 256
+#define PORT_ROCK 12345 // Each port handles a particulra request
+#define PORT_TEMP 12346
+#define PORT_MONOLITH 12347
+#define PORT_RADIATION 12348
+#define BUFFER_SIZE 256 // Data buffer size -> 256 bytes
 
-int main() {
-    WSADATA wsaData; // Iniitalising winsock + struct for winsock implementation
-    int wsaerr = WSAStartup(MAKEWORD(2, 2), &wsaData); // Vers 2.2
-    if (wsaerr != 0) { // Checks for failure
-        std::cerr << "WSAStartup failed: " << wsaerr << std::endl;
-        return 1;
-    }
-    SOCKET server_fd = socket(AF_INET, SOCK_DGRAM, 0); //UDP socket creation
-    if (server_fd == INVALID_SOCKET) {// Just error creation checking
-        std::cerr << "Socket creation failed: " << WSAGetLastError() << std::endl;
-        WSACleanup(); // Clean up resources
-        return 1;
-    }
+void handleRequest(int port) { // Handles requests on a specific port, runs on its own thread
+    SOCKET server_fd; // Socket instance
+    struct sockaddr_in server_addr{}, client_addr{}; // Structs for storing addresses
+    char buffer[BUFFER_SIZE]; // Buffer for incoming data
+    int client_len = sizeof(client_addr); // Storing size of client address struct
 
-
-
-    struct sockaddr_in server_addr{}, client_addr{};// Structs for servre +client addresses
-    server_addr.sin_family = AF_INET;//ipv4
-    server_addr.sin_addr.s_addr = INADDR_ANY; // We accept connections on any  IP
-    server_addr.sin_port = htons(PORT); // Changing port no. to network byte order
-
-
-
-    if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-        //Binding socket to port
-        std::cerr << "Bind failed: " << WSAGetLastError() << std::endl; // More boring error checking...
-        closesocket(server_fd); // Close socket if error occurred
-        WSACleanup();
-        return 1;
+    server_fd = socket(AF_INET, SOCK_DGRAM, 0);// Make UDP socket
+    if (server_fd == INVALID_SOCKET) { // Just for resiliency in case of failure...
+        std::cerr << "[ERROR] Socket creation failed on port " << port << ": " << WSAGetLastError() << std::endl;
+        return;
     }
 
+    server_addr.sin_family = AF_INET; // AF_INET means address family - internet i.e. we work w/IPv4
+    server_addr.sin_addr.s_addr = INADDR_ANY; // We listen for connections on all available interfaces
+    server_addr.sin_port = htons(port); //Switching port number -> network byte order (htons means host to network short).
+    //most network protoocls store numbers big endian (msb first)
 
-    std::cout << "Waiting for rover telemetry data and requests..." << std::endl;
-    char buffer[BUFFER_SIZE]; // buffer of 256 chars or whatever amount requested
-    int client_len = sizeof(client_addr);// Size of client address struct
 
-    std::srand(std::time(nullptr)); // Seeding for rock type randomness
 
-    while (true) {// always true
-        int bytes_received = recvfrom(server_fd, buffer, BUFFER_SIZE - 1, 0,
+    if(bind(server_fd,(struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
+        std::cerr << "[ERROR] Bind failed on port " << port << ": " << WSAGetLastError() << std::endl; // binds socket
+        closesocket(server_fd); //Cleanup...
+        return;
+    }
+    std::cout << "[INFO] Listening on port " << port << "...\n"; // Let the user know we're listening...
+    while (true) { // This loop keeps running forever, listnes for new requests
+        int bytes_received = recvfrom(server_fd, buffer, BUFFER_SIZE -1, 0,
                                       (struct sockaddr*)&client_addr, &client_len);
-        if (bytes_received > 0) { // Check if data received w/o error
-            buffer[bytes_received] = '\0';// Just a null termination
-            std::time_t now = std::time(nullptr); //Cur timestamp
-            std::cout << "[Received @ " << std::ctime(&now) << "] " << buffer << std::endl;
-            // just printing time
-            if(strcmp(buffer, "REQ ROCK_TYPE") == 0) { // Check if rock type. When we add more
-                //parameters we should use switch cases for cleaner coding
-                std::string rock_types[] = {"Basalt", "Regolith", "Anorthosite", "Breccia"};
-                // Cool rock types!!
-                std::string response = "ROCK_TYPE: " + rock_types[std::rand() % 4]; // Rand. rock type from list
+        if (bytes_received > 0){ // Check if we actually got data
+            buffer[bytes_received] = '\0'; // Just for terminating rec string
+            std::time_t now = std::time(nullptr); // Current time
+            std::cout<< "[Received @ " << std::ctime(&now) << "] " << buffer << std::endl;
 
-                sendto(server_fd, response.c_str(), response.length(), 0, // We reeturn msg
-                       (struct sockaddr*)&client_addr, client_len); // to client.
-                std::cout << "[Sent] " << response << std::endl; // Print response sent bck to client
+
+
+            std::string response; // The response we will send back
+            if (port == PORT_ROCK) { // If the request came through the rock data port...
+                std::string rock_types[] = {"Basalt", "Regolith", "Anorthosite", "Breccia"}; // Define rock types
+                response = "ROCK_TYPE: " + rock_types[std::rand() % 4]; // Pick random rock
             }
-        }else{
-            std::cerr << "Receive failed: " << WSAGetLastError() << std::endl; // If failure
-            break;
+            else if (port == PORT_TEMP) { // If it's a temperature request...
+                int temperature = (std::rand() % 121) - 50; // tmp between -50 and 70°C
+                response = "TEMP: " + std::to_string(temperature) + " C";
+            }
+            else if (port == PORT_MONOLITH) { // Checking for monolith presence...
+                response = (std::rand() % 10 == 0) ? "MONOLITH: YES" : "MONOLITH: NO"; // 10% chance monolith found
+            }
+            else if (port == PORT_RADIATION) { // If it's a radiation request...
+                float radiation = static_cast<float>(rand() % 250 + 10) / 100.0;//Radiation lvll between 0.1 to 2.5 mSv
+                response = "RADIATION: " + std::to_string(radiation) +" mSv";
+            }
+
+
+
+            sendto(server_fd, response.c_str(),response.length(), 0,
+                   (struct sockaddr*)&client_addr, client_len); // Send the response back to the client
+            std::cout << "[Sent] " << response << std::endl; // Log the response for debugging
         }
     }
+    closesocket(server_fd); // Close b4 exiting
+}
 
+int main() {
+    WSADATA wsaData; // This holds Winsock startup data
+    int wsaerr = WSAStartup(MAKEWORD(2, 2), &wsaData); // Initialise Winsock v2.2
+    if (wsaerr != 0) { // Iffailure, print error and exit
+        std::cerr << "WSAStartup failed: " << wsaerr << std::endl;
+        return 1; // 1 = error usually
+    }
+    std::srand(std::time(nullptr)); // Seed the random number generator for realistic randomness, but in reality pseudorandom
+    std::thread rockThread(handleRequest, PORT_ROCK); //Create a thread to handle rock data requests
+    std::thread tempThread(handleRequest, PORT_TEMP); // Create a thread to handle temperature requests
+    std::thread monolithThread(handleRequest, PORT_MONOLITH); // Create a thread for monolith requests
+    std::thread radiationThread(handleRequest, PORT_RADIATION); // Create a thread for radiation data
 
+    rockThread.join(); // Wait for the rock thread to finish
+    tempThread.join(); // Same thing for temperature
+    monolithThread.join(); // And monoliths...
+    radiationThread.join(); // And radiation
 
-
-    closesocket(server_fd); // Cleaning up + closing socket when exit occurs
-    WSACleanup();
-    return 0;
+    WSACleanup(); //Clean-up Winsock before exiting
+    return 0; // Exit... and we are done
 }

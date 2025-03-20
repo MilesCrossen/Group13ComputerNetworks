@@ -1,85 +1,77 @@
-#include <iostream>
-#include <cstring>
-#include <winsock2.h> // winsock2 is used for socket programming
-#include <ws2tcpip.h> // winsock2 extension for tcp/ip protocols
-#include <cstdlib> // Gens random numbers
-#include <ctime> // srand() is used to generate a seed for randomisation and time()    // For srand() and time()
-#include <thread> // Multi-threading
-#include <chrono> // For sleeping
+#include <iostream> // Standard input-output stream
+#include <cstring> // C-style string functions
+#include <winsock2.h>// Windows-specific socket programming
+#include <ws2tcpip.h> // Additional TCP/IP utilities
+#include <thread>// Multi-threading support
+#pragma comment(lib, "ws2_32.lib") // Link Winsock library for networking
+#define RELAY_IP "127.0.0.1" // Server IP
+#define PORT_ROCK 5000 // Port spammm
+#define PORT_TEMP 5001
+#define PORT_MONOLITH 5002
+#define PORT_RADIATION 5003
+#define BUFFER_SIZE 256 // This is all explained in other files tbh idk why I'd explain it again
 
-#pragma comment(lib, "ws2_32.lib") //For connecting winsock2
-
-#define PORT 12345 // random port that doesn't interact
-#define SERVER_IP "127.0.0.1" // Loopback address
-#define BUFFER_SIZE 256
-SOCKET sock_fd; //create a socket object
-struct sockaddr_in server_addr; // create sock address object
-
-void requestData() { // This function is used for random reqs
-    while(true) { // i.e. always
-        std::string input;
-        std::getline(std::cin, input); // Wait for user input
-
-        if (input == "rock") { // If user types 'rock' it requests a random rock type
-            std::string request = "REQ ROCK_TYPE";
-            sendto(sock_fd, request.c_str(), request.length(), 0, // We send req to server
-                   (struct sockaddr*)&server_addr, sizeof(server_addr));
-            std::cout << "[Manual Request] Sent: " << request << std::endl; // Just noting in output...
-
-            // Block below is waiting for response
-            char buffer[BUFFER_SIZE]; // up to [BUFFER SIZE] (256 chars)
-            int server_len = sizeof(server_addr); // Just finding length of
-            int bytes_received = recvfrom(sock_fd, buffer, BUFFER_SIZE - 1, 0, // receiving from server
-                                          (struct sockaddr*)&server_addr, &server_len); //via socket
-            if(bytes_received > 0) { // If data was received
-                buffer[bytes_received] = '\0'; //null terminate received string so that it's a valid cstring
-                std::cout << "[Server Response] " << buffer << std::endl;
-            } else {
-                std::cerr << "[ERROR] No response received from server." << std::endl;
-            }
-        } else if (input == "random") { // If user types 'random', send random telemetry data
-            int random_number = (std::rand() % 100) + 1; // Generate random telemetry data
-            std::string message = "Telemetry: " + std::to_string(random_number);
-            sendto(sock_fd, message.c_str(), message.length(), 0,
-                   (struct sockaddr*)&server_addr, sizeof(server_addr));
-            std::cout << "Random telemetry data sent: " << message << std::endl;
-        }
+void requestData(int port, std::string requestMessage) { // Send req to relay
+    SOCKET sock_fd;
+    struct sockaddr_in relay_addr;// For relay address
+    char buffer[BUFFER_SIZE]; // Incoming data..
+    sock_fd = socket(AF_INET, SOCK_DGRAM, 0); // UDP sock
+    if (sock_fd == INVALID_SOCKET) {
+        std::cerr << "[ERROR] Socket creation failed on port " << port << ": " << WSAGetLastError() << std::endl;
+        return;
     }
+
+    relay_addr.sin_family = AF_INET; // IPv4
+    relay_addr.sin_port = htons(port); // Convert port to network byte order
+    if (inet_pton(AF_INET, RELAY_IP, &relay_addr.sin_addr) <= 0) {
+        std::cerr << "[ERROR] Invalid address for relay\n"; // check if IP address valid
+        closesocket(sock_fd);
+        return;
+    }
+    sendto(sock_fd, requestMessage.c_str(), requestMessage.length(), 0, // Send req msg
+           (struct sockaddr*)&relay_addr, sizeof(relay_addr));
+    std::cout << "[Sent] " << requestMessage << " on port " << port << std::endl;
+    int relay_len = sizeof(relay_addr); // Wait for response...
+    int bytes_received = recvfrom(sock_fd, buffer, BUFFER_SIZE - 1, 0,  (struct sockaddr*)&relay_addr, &relay_len);
+    if (bytes_received > 0) { // If we received a response
+        buffer[bytes_received] = '\0';//Terminate...
+        std::cout << "[Server Response via Relay] " << buffer << std::endl;
+    } else{
+        std::cerr << "[ERROR] No response received on port " << port << std::endl;
+    }
+
+
+
+    closesocket(sock_fd);// Close socket once done
 }
 
 int main() {
-    WSADATA wsaData; // Initialise winsock WSADATA struct
-    int wsaerr = WSAStartup(MAKEWORD(2, 2), &wsaData);
-    if (wsaerr != 0) { // Check for intiailisation errors
+    WSADATA wsaData;
+    int wsaerr = WSAStartup(MAKEWORD(2, 2), &wsaData); // More winsock spamming
+    if (wsaerr != 0) { //If error
         std::cerr << "WSAStartup failed: " << wsaerr << std::endl;
-        return 1; // EXit if failure
-    }
-    sock_fd = socket(AF_INET, SOCK_DGRAM, 0); // We make ipv4 (AF_INET) UDP socket
-    if (sock_fd == INVALID_SOCKET) { // Just checcking for failure
-        std::cerr << "Socket creation failed: " << WSAGetLastError() << std::endl;
-        WSACleanup();// Cleaning up resources
         return 1;
     }
+    std::cout << "Rover ready to send telemetry data via relay. Available commands:\n";
+    std::cout << "'rock' -> Request rock type\n";
+    std::cout << "'temp' -> Request temperature\n";
+    std::cout << "'monolith' -> Request monolith presence\n";
+    std::cout << "'radiation' -> Request radiation levels\n";
+    while (true) { // Listen
+        std::string input;
+        std::getline(std::cin, input); // and read...
 
-    // Define server address structure
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
-
-    if (inet_pton(AF_INET,SERVER_IP, &server_addr.sin_addr)<= 0) {
-        std::cerr << "Invalid address/Address not supported" << std::endl; // Just ensuring resiliency
-        closesocket(sock_fd); // close
-        WSACleanup(); // Clean up resources left over
-        return 1;
+        if (input == "rock") requestData(PORT_ROCK, "REQ ROCK_TYPE"); // Rock type
+        else if (input == "temp") requestData(PORT_TEMP, "REQ TEMP"); // Request temperature
+        else if (input == "monolith") requestData(PORT_MONOLITH, "REQ MONOLITH");// Check for monolith presence
+        else if (input == "radiation") requestData(PORT_RADIATION, "REQ RADIATION"); // Get radiation level
+        else std::cout << "[ERROR] Unknown command\n"; // If not recognised, show error
     }
 
-    std::cout << "Rover ready to send telemetry data and request rock types!" << std::endl;
-    std::cout << "Type 'rock' to request moon rock type." << std::endl;
-    std::cout << "Type 'random' to send random telemetry data." << std::endl;
-    std::thread inputThread(requestData);
-    inputThread.join(); // Ensuring main doesn't exit immediately
 
-    // Cleaning up + closing socket
-    closesocket(sock_fd);
+
+
     WSACleanup();
+
     return 0;
 }

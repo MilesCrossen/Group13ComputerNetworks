@@ -16,7 +16,8 @@
 					"targetIndexes" : 
 					[
 						0,
-						1
+						1,
+						2
 					]
 				}
 			],
@@ -32,7 +33,8 @@
 					"targetIndexes" : 
 					[
 						0,
-						1
+						1,
+						2
 					]
 				}
 			],
@@ -41,14 +43,21 @@
 				{
 					"directoryIndex" : 0,
 					"id" : "client::@6890427a1f51a3e7e1df",
-					"jsonFile" : "target-client-Debug-055265bbf33b7869c43d.json",
+					"jsonFile" : "target-client-Debug-9201383fa8c27717e19e.json",
 					"name" : "client",
 					"projectIndex" : 0
 				},
 				{
 					"directoryIndex" : 0,
+					"id" : "relay::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-relay-Debug-1126d95836fbadc56252.json",
+					"name" : "relay",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
 					"id" : "server::@6890427a1f51a3e7e1df",
-					"jsonFile" : "target-server-Debug-5d4f9293f90f01da374d.json",
+					"jsonFile" : "target-server-Debug-0c5fbbf97a3386b8b579.json",
 					"name" : "server",
 					"projectIndex" : 0
 				}

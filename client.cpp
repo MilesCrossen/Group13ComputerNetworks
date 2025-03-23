@@ -21,6 +21,9 @@ void requestData(int port, std::string requestMessage) { // Send req to relay
         return;
     }
 
+    int timeout = 2000; // 2 second receive timeout
+    setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+
     relay_addr.sin_family = AF_INET; // IPv4
     relay_addr.sin_port = htons(port); // Convert port to network byte order
     if (inet_pton(AF_INET, RELAY_IP, &relay_addr.sin_addr) <= 0) {

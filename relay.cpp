@@ -4,6 +4,7 @@
 #include <ws2tcpip.h>// TCP/IP utility functions
 #include <thread> // For handling multiple connections in parallel
 #include <chrono> // Time management
+#include <cstdlib> // For rand()
 
 #pragma comment(lib, "ws2_32.lib") // Winsock library
 
@@ -13,6 +14,10 @@
 #define RELAY_PORT_RADIATION 5003
 #define SERVER_IP "127.0.0.1" // IP address of server
 #define BUFFER_SIZE 256 // Max msg size
+
+#define PACKET_DROP_RATE 0.1 // 20% drop rate
+#define PACKET_DELAY_MS 0 // Delay in ms
+
 int current_time = 0; // Simulated time in minutes, increments quicker than IRL
 
 bool isCommunicationWindowOpen() { // checks if we can communicate based on window
@@ -23,7 +28,7 @@ bool isCommunicationWindowOpen() { // checks if we can communicate based on wind
 void updateTime() { // 50*60x speedup (50 mins pass every 1 second)
     while (true) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        current_time += 50;
+        current_time += 0;
     }
 }
 
@@ -61,6 +66,14 @@ void relayData(int relayPort, int serverPort) { // for communication between ear
                 server_addr.sin_family = AF_INET; // Forwarding to serv
                 server_addr.sin_port = htons(serverPort); // More conversions...
                 inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(PACKET_DELAY_MS)); // Simulate delay
+                float randomValue = static_cast<float>(rand()) / RAND_MAX;
+                if (randomValue < PACKET_DROP_RATE) {
+                    std::cout << "[DROPPED] Packet dropped before reaching server (Port " << relayPort << ", Time: " << current_time << " min)\n";
+                    goto loop_continue;
+                }
+
                 sendto(relay_socket, buffer, bytes_received, 0, (struct sockaddr*)&server_addr, sizeof(server_addr));
 
                 bytes_received = recvfrom(relay_socket, buffer, BUFFER_SIZE - 1, 0,(struct sockaddr*)&server_addr, &server_len); // Wait for answer
@@ -68,19 +81,27 @@ void relayData(int relayPort, int serverPort) { // for communication between ear
                     buffer[bytes_received] = '\0';
                     std::cout << "[SERVER -> RELAY] " << buffer << " (Port " << serverPort << ") (Time: " << current_time << " min)\n";
 
+                    std::this_thread::sleep_for(std::chrono::milliseconds(PACKET_DELAY_MS)); // Simulate delay
+                    randomValue = static_cast<float>(rand()) / RAND_MAX;
+                    if (randomValue < PACKET_DROP_RATE) {
+                        std::cout << "[DROPPED] Response dropped before reaching client (Port " << relayPort << ", Time: " << current_time << " min)\n";
+                        goto loop_continue;
+                    }
+
                     sendto(relay_socket, buffer, bytes_received, 0,(struct sockaddr*)&client_addr, client_len); // Return msg
                 }
             }else{
                 std::cout << "[BLOCKED] Transmission rejected. Satellite out of range. (Time: " << current_time << " min)\n"; // if relay out of range, reject
                 //transmission
 
-
-
                 std::string response = "BLOCKED: Satellite out of range"; // Sending blocked msg
                 sendto(relay_socket, response.c_str(), response.length(), 0,
                        (struct sockaddr*)&client_addr, client_len);
             }
         }
+
+        loop_continue:
+        continue;
     }
 
     closesocket(relay_socket);

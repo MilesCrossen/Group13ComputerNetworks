@@ -10,10 +10,13 @@
 #define PORT_MONOLITH 5002
 #define PORT_RADIATION 5003
 #define BUFFER_SIZE 256 // This is all explained in other files tbh idk why I'd explain it again
+#define MAX_RETRIES 5 // Retry count for lost packets
+
+int currentSeqNum = 0; // RDT 3.0 sequence tracker (flips between 0 and 1)
 
 void requestData(int port, std::string requestMessage) { // Send req to relay
     SOCKET sock_fd;
-    struct sockaddr_in relay_addr;// For relay address
+    struct sockaddr_in relay_addr; // For relay address
     char buffer[BUFFER_SIZE]; // Incoming data..
     sock_fd = socket(AF_INET, SOCK_DGRAM, 0); // UDP sock
     if (sock_fd == INVALID_SOCKET) {
@@ -31,21 +34,40 @@ void requestData(int port, std::string requestMessage) { // Send req to relay
         closesocket(sock_fd);
         return;
     }
-    sendto(sock_fd, requestMessage.c_str(), requestMessage.length(), 0, // Send req msg
-           (struct sockaddr*)&relay_addr, sizeof(relay_addr));
-    std::cout << "[Sent] " << requestMessage << " on port " << port << std::endl;
-    int relay_len = sizeof(relay_addr); // Wait for response...
-    int bytes_received = recvfrom(sock_fd, buffer, BUFFER_SIZE - 1, 0,  (struct sockaddr*)&relay_addr, &relay_len);
-    if (bytes_received > 0) { // If we received a response
-        buffer[bytes_received] = '\0';//Terminate...
-        std::cout << "[Server Response via Relay] " << buffer << std::endl;
-    } else{
-        std::cerr << "[ERROR] No response received on port " << port << std::endl;
+
+    std::string packet = "SEQ " + std::to_string(currentSeqNum) + " | " + requestMessage; // Append seq num to msg
+    int retries = 0; // How many times we tried
+    bool acked = false; // Have we gotten the right ACK?
+
+    while (retries < MAX_RETRIES && !acked) { // Stop-and-wait loop
+        sendto(sock_fd, packet.c_str(), packet.length(), 0, // Send the packet
+               (struct sockaddr*)&relay_addr, sizeof(relay_addr));
+        std::cout << "[Sent] " << packet << " on port " << port << std::endl; // Log it
+
+        int relay_len = sizeof(relay_addr); // Length of address
+        int bytes_received = recvfrom(sock_fd, buffer, BUFFER_SIZE - 1, 0,  (struct sockaddr*)&relay_addr, &relay_len);
+
+        if (bytes_received > 0) { // If we received a response
+            buffer[bytes_received] = '\0'; //Terminate...
+            std::string response(buffer);
+
+            // Check for correct ACK
+            if (response.rfind("ACK " + std::to_string(currentSeqNum), 0) == 0) {
+                std::cout << "[Server Response via Relay] " << response << std::endl;
+                acked = true;
+                currentSeqNum = 1 - currentSeqNum; // Flip sequence number
+            } else {
+                std::cout << "[IGNORED] Unexpected ACK or corrupted packet: " << response << std::endl; // Ignore
+            }
+        } else {
+            std::cout << "[TIMEOUT] No ACK received, retrying... (Attempt " << retries + 1 << ")\n"; // Timeout msg
+            retries++;
+        }
     }
 
+    if (!acked) std::cerr << "[ERROR] Max retries reached. No valid response from server.\n"; // Max retries fail
 
-
-    closesocket(sock_fd);// Close socket once done
+    closesocket(sock_fd); // Close socket once done
 }
 
 int main() {
@@ -71,10 +93,6 @@ int main() {
         else std::cout << "[ERROR] Unknown command\n"; // If not recognised, show error
     }
 
-
-
-
-    WSACleanup();
-
+    WSACleanup(); // Cleanup
     return 0;
 }

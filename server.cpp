@@ -1,5 +1,3 @@
-// SERVER IS THE ROVER, WHICH AWAITS REQUESTS FROM CLIENT
-
 #include <iostream>
 #include <cstring> // C-style strings
 #include <winsock2.h>// Windows-specific socket library
@@ -33,46 +31,52 @@ void handleRequest(int port) { // Handles requests on a specific port, runs on i
     server_addr.sin_port = htons(port); //Switching port number -> network byte order (htons means host to network short).
     //most network protoocls store numbers big endian (msb first)
 
-
-
     if(bind(server_fd,(struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
         std::cerr << "[ERROR] Bind failed on port " << port << ": " << WSAGetLastError() << std::endl; // binds socket
         closesocket(server_fd); //Cleanup...
         return;
     }
     std::cout << "[INFO] Listening on port " << port << "...\n"; // Let the user know we're listening...
+    int expectedSeqNum = 0; // RDT 3.0 sequence tracker(per threadb asis)
+    std::string lastResponse = "";// Used if last good packet must be sent...
+
     while (true) { // This loop keeps running forever, listnes for new requests
         int bytes_received = recvfrom(server_fd, buffer, BUFFER_SIZE -1, 0,
                                       (struct sockaddr*)&client_addr, &client_len);
         if (bytes_received > 0){ // Check if we actually got data
             buffer[bytes_received] = '\0'; // Just for terminating rec string
             std::time_t now = std::time(nullptr); // Current time
-            std::cout<< "[Received @ " << std::ctime(&now) << "] " << buffer << std::endl;
+            std::string received(buffer);
+            std::cout<< "[Received @ " << std::ctime(&now) << "] " << received << std::endl;
 
+            if (received.rfind("SEQ " + std::to_string(expectedSeqNum), 0) == 0) { // Only accept expected seq num
+                std::string response; // The response we will send back
+                if (port == PORT_ROCK) {
+                    std::string rock_types[] = {"Basalt", "Regolith", "Anorthosite", "Breccia"};
+                    response = "ACK " + std::to_string(expectedSeqNum) + " | ROCK_TYPE: " + rock_types[std::rand() % 4];
+                }
+                else if (port == PORT_TEMP) {
+                    int temperature = (std::rand() % 121) - 50;
+                    response = "ACK " + std::to_string(expectedSeqNum) + " | TEMP: " + std::to_string(temperature) + " C";
+                }
+                else if (port == PORT_MONOLITH) {
+                    response = (std::rand() % 10 == 0) ? "ACK " + std::to_string(expectedSeqNum) + " | MONOLITH: YES" : "ACK " + std::to_string(expectedSeqNum) + " | MONOLITH: NO";
+                }
+                else if (port == PORT_RADIATION) {
+                    float radiation = static_cast<float>(rand() % 250 + 10) / 100.0;
+                    response = "ACK " + std::to_string(expectedSeqNum) + " | RADIATION: " + std::to_string(radiation) +" mSv";
+                }
 
-
-            std::string response; // The response we will send back
-            if (port == PORT_ROCK) { // If the request came through the rock data port...
-                std::string rock_types[] = {"Basalt", "Regolith", "Anorthosite", "Breccia"}; // Define rock types
-                response = "ROCK_TYPE: " + rock_types[std::rand() % 4]; // Pick random rock
+                lastResponse = response; // Save in case resend is needed
+                sendto(server_fd, response.c_str(),response.length(), 0,
+                       (struct sockaddr*)&client_addr, client_len); // Send the response back to the client
+                std::cout << "[Sent] " << response << std::endl; // Log the response
+                expectedSeqNum = 1 - expectedSeqNum; // Flip expected seq num
+            } else {
+                std::cout << "[DUPLICATE/OUT-OF-ORDER] Resending last response: " << lastResponse << std::endl; // Just resend
+                sendto(server_fd, lastResponse.c_str(), lastResponse.length(), 0,
+                       (struct sockaddr*)&client_addr, client_len);
             }
-            else if (port == PORT_TEMP) { // If it's a temperature request...
-                int temperature = (std::rand() % 121) - 50; // tmp between -50 and 70°C
-                response = "TEMP: " + std::to_string(temperature) + " C";
-            }
-            else if (port == PORT_MONOLITH) { // Checking for monolith presence...
-                response = (std::rand() % 10 == 0) ? "MONOLITH: YES" : "MONOLITH: NO"; // 10% chance monolith found
-            }
-            else if (port == PORT_RADIATION) { // If it's a radiation request...
-                float radiation = static_cast<float>(rand() % 250 + 10) / 100.0;//Radiation lvll between 0.1 to 2.5 mSv
-                response = "RADIATION: " + std::to_string(radiation) +" mSv";
-            }
-
-
-
-            sendto(server_fd, response.c_str(),response.length(), 0,
-                   (struct sockaddr*)&client_addr, client_len); // Send the response back to the client
-            std::cout << "[Sent] " << response << std::endl; // Log the response for debugging
         }
     }
     closesocket(server_fd); // Close b4 exiting

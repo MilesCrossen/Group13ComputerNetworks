@@ -15,7 +15,7 @@
 #define SERVER_IP "127.0.0.1" // IP address of server
 #define BUFFER_SIZE 256 // Max msg size
 
-#define PACKET_DROP_RATE 0.1 // 20% drop rate
+#define PACKET_DROP_RATE 0.2 // adjustable loss rate
 #define PACKET_DELAY_MS 0 // Delay in ms
 
 int current_time = 0; // Simulated time in minutes, increments quicker than IRL

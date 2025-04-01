@@ -19,16 +19,35 @@
 #define MAX_RETRIES 5 // Retry count for lost packets
 #define IMAGE_BUFFER_SIZE 2048 // Larger buffer for image data
 #define IMAGE_TIMEOUT 5000 // 5 second timeout for image operations
+#define PORT_DISCOVERY 5005 // Port for rover discovery
+#define MAX_ROVERS 10 // Maximum number of rovers we expect to find
+#define ROVER_PORT 13000 // Port for direct rover-to-rover communication
 
 // Keep track of sequence numbers for each port separately
 //fixing the problem where requests on different ports would interfere with each other
 // Each service (rock, temp, etc.) gets its own sequence number counter starting at 0
-std::map<int, int> portSeqNums = { // Seq nums of each port are tracked separately
+/*std::map<int, int> portSeqNums = { // Seq nums of each port are tracked separately
     {PORT_ROCK, 0},
     {PORT_TEMP, 0},
     {PORT_MONOLITH, 0},
     {PORT_RADIATION, 0},
     {PORT_IMAGE, 0}
+};*/
+
+std::map<int, int> portSeqNums = {
+    {PORT_ROCK, 0},
+    {PORT_TEMP, 0},
+    {PORT_MONOLITH, 0},
+    {PORT_RADIATION, 0},
+    {PORT_IMAGE, 0},
+    {PORT_DISCOVERY, 0} // Add discovery port
+};
+
+struct RoverInfo {
+    std::string id;
+    std::string ip;
+    std::string capabilities;
+    std::string status;
 };
 
 void requestImage() {
@@ -79,6 +98,9 @@ void requestImage() {
             // Verify it's the right ACK (matches our sequence number) + has image size
             if (response.rfind("ACK " +std::to_string(portSeqNums[PORT_IMAGE]), 0)== 0 &&
                 response.find("IMAGE_SIZE: ") != std::string::npos) {
+                // Log receipt of the ACK for clarity and consistency with other request types
+                std::cout << "[Received] ACK " << portSeqNums[PORT_IMAGE] << " for image request" << std::endl;
+
                 size_t pos = response.find("IMAGE_SIZE: ") + 12; // Extract image size
                 std::string size_str = response.substr(pos);
                 image_size = std::stoul(size_str); // Convert string to unsigned long
@@ -349,6 +371,201 @@ void requestData(int port, std::string requestMessage) { // Send req to relay
     closesocket(sock_fd); // Close socket at end
 }
 
+void discoverRovers(){
+    SOCKET sock_fd;
+    struct sockaddr_in relay_addr;
+    char buffer[BUFFER_SIZE];
+    std::vector<RoverInfo> rovers;
+
+    sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock_fd == INVALID_SOCKET) {
+        std::cerr << "[ERROR] Socket creation failed for discovery: " << WSAGetLastError() << std::endl;
+        return;
+    }
+
+    // Set timeout for receiving responses
+    int timeout = 5000; // 5 seconds, longer timeout for discovery
+    setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+
+    relay_addr.sin_family = AF_INET;
+    relay_addr.sin_port = htons(PORT_DISCOVERY);
+    if (inet_pton(AF_INET, RELAY_IP, &relay_addr.sin_addr) <= 0) {
+        std::cerr << "[ERROR] Invalid address for relay\n";
+        closesocket(sock_fd);
+        return;
+    }
+
+    // Create the discovery packet with sequence number
+    std::string packet = "SEQ " + std::to_string(portSeqNums[PORT_DISCOVERY]) + " | DISCOVER_ROVERS";
+    int retries = 0;
+    bool discovery_complete = false;
+
+    std::cout << "[INFO] Starting rover discovery...\n";
+
+    while (retries < MAX_RETRIES && !discovery_complete) {
+        // Send discovery request
+        sendto(sock_fd, packet.c_str(), packet.length(), 0,
+              (struct sockaddr*)&relay_addr, sizeof(relay_addr));
+        std::cout << "[Sent] " << packet << " on port " << PORT_DISCOVERY << std::endl;
+
+        // Collect responses until we get the completion message or timeout
+        while (true) {
+            int relay_len = sizeof(relay_addr);
+            int bytes_received = recvfrom(sock_fd, buffer, BUFFER_SIZE - 1, 0,
+                                         (struct sockaddr*)&relay_addr, &relay_len);
+
+            if (bytes_received > 0) {
+                buffer[bytes_received] = '\0';
+                std::string response(buffer);
+
+                // Check if this is the completion message
+                if (response == "DISCOVERY_COMPLETE") {
+                    discovery_complete = true;
+                    break;
+                }
+                // Check if this is a rover info response
+                else if (response.rfind("ACK " + std::to_string(portSeqNums[PORT_DISCOVERY]), 0) == 0 &&
+                        response.find("ROVER_INFO:") != std::string::npos) {
+
+                    // Parse the rover info
+                    size_t info_start = response.find("ROVER_INFO: ") + 12;
+                    std::string rover_data = response.substr(info_start);
+
+                    // Format is id,ip,capabilities,status
+                    size_t comma1 = rover_data.find(',');
+                    size_t comma2 = rover_data.find(',', comma1 + 1);
+                    size_t comma3 = rover_data.find(',', comma2 + 1);
+
+                    if (comma1 != std::string::npos && comma2 != std::string::npos && comma3 != std::string::npos) {
+                        RoverInfo rover;
+                        rover.id = rover_data.substr(0, comma1);
+                        rover.ip = rover_data.substr(comma1 + 1, comma2 - comma1 - 1);
+                        rover.capabilities = rover_data.substr(comma2 + 1, comma3 - comma2 - 1);
+                        rover.status = rover_data.substr(comma3 + 1);
+
+                        // Check if we already have this rover
+                        bool duplicate = false;
+                        for (const auto& existing : rovers) {
+                            if (existing.id == rover.id) {
+                                duplicate = true;
+                                break;
+                            }
+                        }
+
+                        if (!duplicate) {
+                            rovers.push_back(rover);
+                            std::cout << "[Discovered] Rover " << rover.id << " at " << rover.ip << std::endl;
+                        }
+                    }
+                }
+                // Other unexpected response
+                else {
+                    std::cout << "[IGNORED] Unexpected response: " << response << std::endl;
+                }
+            } else {
+                // Timeout waiting for responses
+                break;
+            }
+        }
+
+        if (!discovery_complete) {
+            retries++;
+            std::cout << "[TIMEOUT] Discovery incomplete, retrying... (Attempt " << retries << ")\n";
+        }
+    }
+
+    // Update sequence number
+    portSeqNums[PORT_DISCOVERY] = 1 - portSeqNums[PORT_DISCOVERY];
+
+    // Display results
+    std::cout << "\n=== Rover Discovery Results ===\n";
+    if (rovers.empty()) {
+        std::cout << "No rovers found on the network.\n";
+    } else {
+        std::cout << "Found " << rovers.size() << " rovers:\n";
+        for (size_t i = 0; i < rovers.size(); i++) {
+            std::cout << (i+1) << ". Rover ID: " << rovers[i].id << "\n";
+            std::cout << "   IP: " << rovers[i].ip << "\n";
+            std::cout << "   Capabilities: " << rovers[i].capabilities << "\n";
+            std::cout << "   Status: " << rovers[i].status << "\n";
+            std::cout << "\n";
+        }
+    }
+    std::cout << "==============================\n";
+
+    closesocket(sock_fd);
+}
+
+void requestRoverData(const std::string& rover_ip, const std::string& requestMessage) {
+    SOCKET sock_fd;
+    struct sockaddr_in rover_addr;
+    char buffer[BUFFER_SIZE];
+
+    sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock_fd == INVALID_SOCKET) {
+        std::cerr << "[ERROR] Socket creation failed for direct rover communication: "
+                 << WSAGetLastError() << std::endl;
+        return;
+    }
+
+    // Set timeout for receiving responses
+    int timeout = 2000; // 2 second timeout
+    setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+
+    rover_addr.sin_family = AF_INET;
+    rover_addr.sin_port = htons(ROVER_PORT); // Use the rover-to-rover port
+
+    // Convert string IP to binary form
+    if (inet_pton(AF_INET, rover_ip.c_str(), &rover_addr.sin_addr) <= 0) {
+        std::cerr << "[ERROR] Invalid rover IP address: " << rover_ip << "\n";
+        closesocket(sock_fd);
+        return;
+    }
+
+    // Use a separate rover-to-rover sequence number
+    static int roverSeqNum = 0;
+
+    // Create packet with rover-specific sequence prefix
+    std::string packet = "ROVER_SEQ " + std::to_string(roverSeqNum) + " | " + requestMessage;
+    int retries = 0;
+    bool acked = false;
+
+    std::cout << "[INFO] Sending request directly to rover at " << rover_ip << "...\n";
+
+    // RDT 3.0 implementation for rover-to-rover
+    while (retries < MAX_RETRIES && !acked) {
+        sendto(sock_fd, packet.c_str(), packet.length(), 0,
+              (struct sockaddr*)&rover_addr, sizeof(rover_addr));
+        std::cout << "[Sent to Rover] " << packet << std::endl;
+
+        int rover_len = sizeof(rover_addr);
+        int bytes_received = recvfrom(sock_fd, buffer, BUFFER_SIZE - 1, 0,
+                                     (struct sockaddr*)&rover_addr, &rover_len);
+
+        if (bytes_received > 0) {
+            buffer[bytes_received] = '\0';
+            std::string response(buffer);
+
+            if (response.rfind("ROVER_ACK " + std::to_string(roverSeqNum), 0) == 0) {
+                std::cout << "[Rover Response] " << response << std::endl;
+                acked = true;
+                roverSeqNum = 1 - roverSeqNum; // Flip sequence number
+            } else {
+                std::cout << "[IGNORED] Unexpected rover ACK: " << response << std::endl;
+            }
+        } else {
+            std::cout << "[TIMEOUT] No response from rover, retrying... (Attempt " << retries + 1 << ")\n";
+            retries++;
+        }
+    }
+
+    if (!acked) {
+        std::cerr << "[ERROR] Max retries reached. No valid response from rover.\n";
+    }
+
+    closesocket(sock_fd);
+}
+
 int main() {
     WSADATA wsaData; // Initialize Winsock - library used for Windows socket programming
     int wsaerr = WSAStartup(MAKEWORD(2, 2), &wsaData); // More winsock spamming
@@ -365,6 +582,8 @@ int main() {
     std::cout << "'monolith' -> Request monolith presence\n";
     std::cout << "'radiation' -> Request radiation levels\n";
     std::cout << "'image' -> Request lunar surface image\n";
+    std::cout << "'discover' -> Find rovers on the network\n";
+    std::cout << "'rover (ip) message (MESSAGE CONTENT)' -> Send text to other rover\n";
 
 
     while (true) { // Listen until user closes programme, here we process user commands, call functions etc
@@ -376,6 +595,29 @@ int main() {
         else if (input == "monolith") requestData(PORT_MONOLITH, "REQ MONOLITH");// Check for monolith presence
         else if (input == "radiation") requestData(PORT_RADIATION, "REQ RADIATION"); // Get radiation level
         else if (input == "image") requestImage(); // Request lunar surface image
+        else if (input == "discover") discoverRovers(); // Find rovers on the network
+        else if (input.rfind("rover ", 0) == 0) {
+            std::string command = input.substr(6); // Remove "rover " prefix
+
+            // Find the space between IP and "message"
+            size_t space_pos = command.find(' ');
+            if (space_pos != std::string::npos) {
+                std::string rover_ip = command.substr(0, space_pos);
+                std::string remainder = command.substr(space_pos + 1);
+
+                // Check if this is a message command
+                if (remainder.rfind("message ", 0) == 0) {
+                    std::string message_text = remainder.substr(8); // Remove "message " prefix
+                    requestRoverData(rover_ip, "REQ TEXT " + message_text);
+                }
+                else {
+                    std::cout << "[ERROR] Unknown rover command. Use 'rover <ip> message <text>'\n";
+                }
+            }
+            else {
+                std::cout << "[ERROR] Invalid rover command format. Use 'rover <ip> message <text>'\n";
+            }
+        }
         else std::cout << "[ERROR] Unknown command\n"; // If not recognised, error
     }
 

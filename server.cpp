@@ -21,6 +21,9 @@
 #define BUFFER_SIZE 256 // Data buffer-> 256 bytes
 #define CHUNK_SIZE 512 // Size for image chunks
 #define IMAGE_MAX_RETRIES 5 // Max retries for image chunks
+#define PORT_DISCOVERY 12350 // New port for rover discovery
+#define DISCOVERY_BUFFER_SIZE 512 // Buffer for discovery responses
+#define ROVER_PORT 13000 // Port for direct rover-to-rover communication
 
 void handleImageRequest(SOCKET server_fd, struct sockaddr_in client_addr, int client_len, int seq_num) {
     // Path to the image file
@@ -279,26 +282,192 @@ void handleRequest(int port) { // Handles requests on a specific port, runs on i
     closesocket(server_fd); // Close b4 exiting
 }
 
+void handleDiscoveryRequest(int seq_num) { // Sequence num as parameter to prevent desynchronisation
+    SOCKET discovery_fd; // Socket instance for discovery communication
+    struct sockaddr_in discovery_addr{}; // Struct for storing socket address info
+
+    discovery_fd = socket(AF_INET, SOCK_DGRAM, 0); // Create UDP socket for discovery (connectionless)
+    if (discovery_fd == INVALID_SOCKET) { // Check if socket creation failed (robustness)
+        std::cerr << "[ERROR] Discovery socket creation failed: " << WSAGetLastError() << std::endl;
+        return; // Exit if we can't even create a socket... no point continuing
+    }
+
+    // Enable broadcasting since discovery needs to receive broadcast messages
+    int broadcast = 1; // 1 = enable broadcasting, 0 = disable
+    if (setsockopt(discovery_fd, SOL_SOCKET, SO_BROADCAST, (char*)&broadcast, sizeof(broadcast)) == SOCKET_ERROR) {
+        std::cerr << "[ERROR] Could not set broadcast option: " << WSAGetLastError() << std::endl;
+        closesocket(discovery_fd); // Clean up the socket before exiting
+        return; // No point continuing if we can't receive broadcasts
+    }
+
+    // Set up the socket address structure for binding
+    discovery_addr.sin_family = AF_INET; // Using IPv4...
+    discovery_addr.sin_addr.s_addr = INADDR_ANY; // Listen on all network interfaces
+    discovery_addr.sin_port = htons(PORT_DISCOVERY); // Convert port to network byte order i.e. number->binary
+
+    if (bind(discovery_fd, (struct sockaddr*)&discovery_addr, sizeof(discovery_addr)) == SOCKET_ERROR) { // Binding socket
+        std::cerr << "[ERROR] Bind failed on discovery port: " << WSAGetLastError() << std::endl;
+        closesocket(discovery_fd); // Cleanup...
+        return; // Again, can't continue if binding fails
+    }
+
+    std::cout << "[INFO] Listening for discovery requests on port " << PORT_DISCOVERY << "...\n";
+    // Buffer for receiving discovery requests and struct for client address
+    char buffer[DISCOVERY_BUFFER_SIZE]; // Buffer for incoming discovery messages
+    struct sockaddr_in client_addr{}; // Will store the address of whoever is discovering us
+    int client_len = sizeof(client_addr); // Size needed for recvfrom()
+
+    // Generate unique rover identifier using hostname and process ID
+    char hostname[256]; // Buffer to store this computer's hostname
+    gethostname(hostname, sizeof(hostname)); // Get the actual hostname
+    DWORD pid = GetCurrentProcessId(); // Get process ID to make ID even more unique
+
+    // Create rover information that will be sent in discovery responses
+    std::string rover_id = std::string(hostname) + "-" + std::to_string(pid); // Unique ID combining hostname and PID
+    std::string rover_capabilities = "rock_analysis,temperature,radiation,imagery"; // What this rover can do
+    std::string rover_status = "active"; // Current operational status
+
+    while(true) { // Main discovery loop ->keep listening for discovery requests forever
+        int bytes_received = recvfrom(discovery_fd, buffer, DISCOVERY_BUFFER_SIZE - 1, 0,
+                              (struct sockaddr*)&client_addr, &client_len); // Wait for an incoming discovery request
+
+        if (bytes_received > 0) { // Only process if we actually received sth
+            buffer[bytes_received] = '\0'; // Null-terminate for string processing
+            std::string request(buffer); // Convert to string object for easier handling
+            std::time_t now = std::time(nullptr); // Get current time for logging
+            std::cout << "[Received Discovery @ " << std::ctime(&now) << "] " << request << std::endl;
+
+            // Check if this is a properly formatted discovery request with the expected sequence number
+            if (request.rfind("SEQ " + std::to_string(seq_num) + " | DISCOVER_ROVERS", 0) == 0) {
+                // We need our own IP address to include in the response
+                char local_ip[INET_ADDRSTRLEN]; // Buffer for IP string representation
+                struct sockaddr_in local_addr{}; // Struct to hold our local address info
+                int local_addr_len = sizeof(local_addr);
+
+                // Get the socket's local address info
+                getsockname(discovery_fd, (struct sockaddr*)&local_addr, &local_addr_len);
+                // Convert binary IP address to string format
+                inet_ntop(AF_INET, &local_addr.sin_addr, local_ip, INET_ADDRSTRLEN);
+
+                // Format our discovery response with all rover details
+                // Format: ACK [seq] | ROVER_INFO: [id],[ip],[capabilities],[status]
+                std::string response = "ACK " + std::to_string(seq_num) + " | ROVER_INFO: " +
+                                      rover_id + "," +
+                                      local_ip + "," +
+                                      rover_capabilities + "," +
+                                      rover_status;
+
+                // Send our response back to whoever sent the discovery request
+                sendto(discovery_fd, response.c_str(), response.length(), 0,
+                      (struct sockaddr*)&client_addr, client_len);
+
+                std::cout << "[Sent] " << response << std::endl; // Log what we sent
+            }
+        }
+    }
+
+    closesocket(discovery_fd); // Close socket before exiting but not necessary as outlined in diff functions
+}
+
+void handleRoverRequests() {
+    SOCKET rover_fd; // Socket instance for rover-to-rover communication
+    struct sockaddr_in rover_addr{}, client_addr{}; // Address structs for this rover and others
+    char buffer[BUFFER_SIZE]; // Buffer for incoming data
+    int client_len = sizeof(client_addr); // Size of client address struct needed for recvfrom
+
+    // Create a UDP socket for rover-to-rover communication
+    rover_fd = socket(AF_INET, SOCK_DGRAM, 0); // UDP socket is connectionless and good for our purpose
+    if (rover_fd == INVALID_SOCKET) { // Check if socket creation failed
+        std::cerr << "[ERROR] Rover socket creation failed: " << WSAGetLastError() << std::endl;
+        return; // Exit if we can't create a socket
+    }
+
+    rover_addr.sin_family = AF_INET; // IPv4 address family
+    rover_addr.sin_addr.s_addr = INADDR_ANY; // Listen on all available network interfaces
+    rover_addr.sin_port = htons(ROVER_PORT); // Convert rover port to network byte order
+
+    if (bind(rover_fd, (struct sockaddr*)&rover_addr, sizeof(rover_addr)) == SOCKET_ERROR) { // Bind socket to port
+        std::cerr << "[ERROR] Bind failed on rover port: " << WSAGetLastError() << std::endl;
+        closesocket(rover_fd); // Clean up socket resource
+        return; // Can't continue if binding fails
+    }
+
+    std::cout << "[INFO] Listening for direct rover messages on port " << ROVER_PORT << "...\n";
+
+    // Track sequence numbers for rover-to-rover communication
+    int expectedRoverSeqNum = 0; // Start with sequence number 0 for RDT 3.0
+    std::string lastRoverResponse = ""; // Store last response in case we need to resend
+
+    while (true) { // Infinite loop to continuously handle messages
+        int bytes_received = recvfrom(rover_fd, buffer, BUFFER_SIZE - 1, 0,
+                              (struct sockaddr*)&client_addr, &client_len); // Wait for data from other rovers
+
+        if (bytes_received > 0) { // Only process if we actually received something
+            buffer[bytes_received] = '\0'; // Null-terminate the string
+            std::string request(buffer); // Convert to string for easier processing
+            std::time_t now = std::time(nullptr); // Current time for logging
+            std::cout << "[Rover Message @ " << std::ctime(&now) << "] " << request << std::endl;
+
+            // Check if this is a new request with the expected sequence number
+            if (request.rfind("ROVER_SEQ " + std::to_string(expectedRoverSeqNum), 0) == 0) {
+                std::string response; // Will hold our response to the request
+
+                if (request.find("REQ TEXT") != std::string::npos) { // Text message handling
+                    // Extract text content starting after "REQ TEXT "
+                    std::string text_content = request.substr(request.find("REQ TEXT") + 9);
+                    std::cout << "[TEXT MESSAGE RECEIVED] " << text_content << std::endl; // Display received text
+                    response = "ROVER_ACK " + std::to_string(expectedRoverSeqNum) +
+                              " | TEXT_RECEIVED: " + text_content; // Echo back the text
+                }
+                else { // Unknown request type
+                    response = "ROVER_ACK " + std::to_string(expectedRoverSeqNum) +
+                              " | ERROR: Unknown request type";
+                }
+
+                lastRoverResponse = response; // Save response in case we need to resend
+                sendto(rover_fd, response.c_str(), response.length(), 0,
+                      (struct sockaddr*)&client_addr, client_len); // Send response to requesting rover
+                std::cout << "[Rover Response] " << response << std::endl;
+                expectedRoverSeqNum = 1 - expectedRoverSeqNum; // Flip sequence number for RDT 3.0
+            }
+            else { // Out of order or duplicate packet
+                // Resend last response for duplicate/out-of-order packets
+                std::cout << "[DUPLICATE/OUT-OF-ORDER] Resending last response: " << lastRoverResponse << std::endl;
+                sendto(rover_fd, lastRoverResponse.c_str(), lastRoverResponse.length(), 0,
+                      (struct sockaddr*)&client_addr, client_len); // Resend last response
+            }
+        }
+    }
+
+    closesocket(rover_fd); // Close socket before exiting (unlikely to reach here)
+}
+
 int main() {
     WSADATA wsaData; // This holds Winsock startup data
     int wsaerr = WSAStartup(MAKEWORD(2, 2), &wsaData); // Initialise Winsock v2.2
-    if (wsaerr != 0) { // Iffailure, print error and exit
+    if (wsaerr != 0) { // If failure, print error and exit
         std::cerr << "WSAStartup failed: " << wsaerr << std::endl;
         return 1; // 1 = error usually
     }
     std::srand(std::time(nullptr)); // Seed the random number generator for realistic randomness, but in reality pseudorandom
+
     std::thread rockThread(handleRequest, PORT_ROCK); //Create a thread to handle rock data requests
     std::thread tempThread(handleRequest, PORT_TEMP); // Create a thread to handle temperature requests
     std::thread monolithThread(handleRequest, PORT_MONOLITH); // Create a thread for monolith requests
     std::thread radiationThread(handleRequest, PORT_RADIATION); // Create a thread for radiation data
     std::thread imageThread(handleRequest, PORT_IMAGE); // Create a thread for image requests
+    std::thread discoveryThread(handleDiscoveryRequest, 0); // Create a thread for discovery requests with initial seq_num = 0
+    std::thread roverThread(handleRoverRequests); // Create a thread for rover-to-rover communication
 
     rockThread.join(); // Wait for the rock thread to finish
     tempThread.join(); // Same thing for temperature
     monolithThread.join(); // And monoliths...
     radiationThread.join(); // And radiation
     imageThread.join(); // And images
+    discoveryThread.join(); // Wait for discovery thread to finish
+    roverThread.join();
 
     WSACleanup(); //Clean-up Winsock before exiting
     return 0; // Exit... and we are done
 }
+

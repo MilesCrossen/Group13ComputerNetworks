@@ -8,6 +8,7 @@
 #include <chrono> // For time management/updates
 #include <cstdlib> // For rand()
 #include <vector> // For storing image chunks
+#include <algorithm>
 
 #pragma comment(lib, "ws2_32.lib") // Winsock library
 
@@ -19,9 +20,11 @@
 #define SERVER_IP "127.0.0.1" // IP address of server
 #define BUFFER_SIZE 256 // Max msg size
 #define IMAGE_BUFFER_SIZE 2048 // Larger buffer for image chunks
+#define RELAY_PORT_DISCOVERY 5005 // Relay port for discovery
+#define BROADCAST_IP "255.255.255.255" // Broadcast address for discovery
 
-#define PACKET_DROP_RATE 0 // adjustable loss rate
-#define PACKET_DELAY_MS 10 // Delay in ms
+#define PACKET_DROP_RATE 0.00 // adjustable loss rate
+#define PACKET_DELAY_MS 0 // Delay in ms
 
 int timePassRate = 0; // How many mins pass per IRL second?
 int current_time = 0; // Simulated time in minutes, increments quicker than IRL
@@ -292,6 +295,151 @@ void relayData(int relayPort, int serverPort) { // for communication between ear
     closesocket(relay_socket);
 }
 
+void relayDiscovery(int relayPort, int serverPort) {
+    SOCKET relay_socket;
+    struct sockaddr_in relay_addr{}, server_addr{}, client_addr{};
+    char buffer[BUFFER_SIZE];
+    int client_len = sizeof(client_addr), server_len = sizeof(server_addr);
+
+    relay_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (relay_socket == INVALID_SOCKET) {
+        std::cerr << "[ERROR] Socket creation failed on discovery relay port "
+                 << relayPort << ": " << WSAGetLastError() << std::endl;
+        return;
+    }
+
+    // Enable broadcast capability
+    int broadcast = 1;
+    if (setsockopt(relay_socket, SOL_SOCKET, SO_BROADCAST, (char*)&broadcast,
+                  sizeof(broadcast)) == SOCKET_ERROR) {
+        std::cerr << "[ERROR] Failed to set broadcast option: " << WSAGetLastError() << std::endl;
+        closesocket(relay_socket);
+        return;
+    }
+
+    relay_addr.sin_family = AF_INET;
+    relay_addr.sin_addr.s_addr = INADDR_ANY;
+    relay_addr.sin_port = htons(relayPort);
+
+    if (bind(relay_socket, (struct sockaddr*)&relay_addr, sizeof(relay_addr)) == SOCKET_ERROR) {
+        std::cerr << "[ERROR] Bind failed on discovery relay port "
+                 << relayPort << ": " << WSAGetLastError() << std::endl;
+        closesocket(relay_socket);
+        return;
+    }
+
+    std::cout << "[INFO] Discovery relay listening on port " << relayPort << "...\n";
+
+    // Create a multimap to store rover responses for the current discovery session
+    std::vector<std::string> rover_responses;
+
+    while (true) {
+        int bytes_received = recvfrom(relay_socket, buffer, BUFFER_SIZE - 1, 0,
+                             (struct sockaddr*)&client_addr, &client_len);
+
+        if (bytes_received > 0) {
+            buffer[bytes_received] = '\0';
+
+            if (isCommunicationWindowOpen()) {
+                std::string request(buffer);
+                std::cout << "[CLIENT -> RELAY] " << request << " (Port "
+                         << relayPort << ") (Time: " << current_time << " min)\n";
+
+                // Reset rover responses if this is a new discovery request
+                if (request.find("DISCOVER_ROVERS") != std::string::npos) {
+                    rover_responses.clear();
+                }
+
+                // Prepare to forward to all rovers via broadcast
+                server_addr.sin_family = AF_INET;
+                server_addr.sin_port = htons(serverPort);
+
+                // Use broadcast address to reach all rovers on the subnet
+                inet_pton(AF_INET, BROADCAST_IP, &server_addr.sin_addr);
+
+                // Add typical relay delay
+                std::this_thread::sleep_for(std::chrono::milliseconds(PACKET_DELAY_MS));
+
+                // Simulate packet loss if needed
+                float randomValue = static_cast<float>(rand()) / RAND_MAX;
+                if (randomValue < PACKET_DROP_RATE) {
+                    std::cout << "[DROPPED] Discovery request dropped before reaching rovers (Port "
+                             << relayPort << ", Time: " << current_time << " min)\n";
+                    continue;
+                }
+
+                // Forward the discovery request to all rovers
+                sendto(relay_socket, buffer, bytes_received, 0,
+                      (struct sockaddr*)&server_addr, sizeof(server_addr));
+
+                // Now we need to collect responses from multiple rovers
+                // Set a timeout for collecting responses
+                int discovery_timeout = 2000; // 2 seconds
+                auto start_time = std::chrono::steady_clock::now();
+
+                while (std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - start_time).count() < discovery_timeout) {
+
+                    // Set socket timeout to be short so we can check the overall timeout frequently
+                    int socket_timeout = 200; // 200ms
+                    setsockopt(relay_socket, SOL_SOCKET, SO_RCVTIMEO,
+                              (const char*)&socket_timeout, sizeof(socket_timeout));
+
+                    bytes_received = recvfrom(relay_socket, buffer, BUFFER_SIZE - 1, 0,
+                                    (struct sockaddr*)&server_addr, &server_len);
+
+                    if (bytes_received > 0) {
+                        buffer[bytes_received] = '\0';
+                        std::string response(buffer);
+
+                        // Check if this is a rover info response
+                        if (response.find("ROVER_INFO:") != std::string::npos) {
+                            std::cout << "[SERVER -> RELAY] " << response << " (Port "
+                                     << serverPort << ") (Time: " << current_time << " min)\n";
+
+                            // Add to our response list if it's a new one
+                            if (std::find(rover_responses.begin(), rover_responses.end(),
+                                        response) == rover_responses.end()) {
+                                rover_responses.push_back(response);
+                            }
+
+                            // Forward each rover response back to the client
+                            std::this_thread::sleep_for(std::chrono::milliseconds(PACKET_DELAY_MS));
+                            randomValue = static_cast<float>(rand()) / RAND_MAX;
+                            if (randomValue < PACKET_DROP_RATE) {
+                                std::cout << "[DROPPED] Rover response dropped before reaching client (Port "
+                                         << relayPort << ", Time: " << current_time << " min)\n";
+                            } else {
+                                sendto(relay_socket, buffer, bytes_received, 0,
+                                      (struct sockaddr*)&client_addr, client_len);
+                            }
+                        }
+                    }
+                }
+
+                // After timeout, send a completion message
+                std::string completion = "DISCOVERY_COMPLETE";
+                sendto(relay_socket, completion.c_str(), completion.length(), 0,
+                      (struct sockaddr*)&client_addr, client_len);
+
+                std::cout << "[RELAY -> CLIENT] Discovery complete, found "
+                         << rover_responses.size() << " rovers (Time: " << current_time << " min)\n";
+
+            } else {
+                // Communication window closed
+                std::cout << "[BLOCKED] Discovery rejected. Satellite out of range. (Time: "
+                         << current_time << " min)\n";
+
+                std::string response = "BLOCKED: Satellite out of range";
+                sendto(relay_socket, response.c_str(), response.length(), 0,
+                      (struct sockaddr*)&client_addr, client_len);
+            }
+        }
+    }
+
+    closesocket(relay_socket);
+}
+
 int main() {
     WSADATA wsaData;
     int wsaerr = WSAStartup(MAKEWORD(2, 2), &wsaData); // Initialise winsock
@@ -307,6 +455,7 @@ int main() {
     std::thread monolithRelay(relayData, RELAY_PORT_MONOLITH, 12347);
     std::thread radiationRelay(relayData, RELAY_PORT_RADIATION, 12348);
     std::thread imageRelay(relayImageData, RELAY_PORT_IMAGE, 12349); // New thread for image relay
+    std::thread discoveryRelay(relayDiscovery, RELAY_PORT_DISCOVERY, 12350);
 
     timeThread.detach(); // Time thread runs independently (doesn't block execution)
     rockRelay.join(); // Wait for the rock relay thread to finish (it never will)
@@ -314,7 +463,9 @@ int main() {
     monolithRelay.join(); // Wait for the monolith relay thread
     radiationRelay.join(); // Wait for the radiation relay thread
     imageRelay.join(); // Wait for the image relay thread
+    discoveryRelay.join(); // Wait for the discovery relay thread
 
     WSACleanup();
     return 0;// Then... clean + exit
 }
+

@@ -9,6 +9,7 @@
 
 #pragma comment(lib, "ws2_32.lib") //For connecting winsock2
 
+
 #define PORT 12345 // random port that doesn't interact
 #define SERVER_IP "127.0.0.1" // Loopback address
 #define BUFFER_SIZE 256

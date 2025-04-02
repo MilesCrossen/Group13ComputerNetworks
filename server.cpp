@@ -11,7 +11,7 @@
 #define BUFFER_SIZE 256
 
 int main() {
-    WSADATA wsaData; // Iniitalising winsock + struct for winsock implementation
+    WSADATA wsaData; // Initalising winsock + struct for winsock implementation
     int wsaerr = WSAStartup(MAKEWORD(2, 2), &wsaData); // Vers 2.2
     if (wsaerr != 0) { // Checks for failure
         std::cerr << "WSAStartup failed: " << wsaerr << std::endl;
@@ -26,7 +26,7 @@ int main() {
 
 
 
-    struct sockaddr_in server_addr{}, client_addr{};// Structs for servre +client addresses
+    struct sockaddr_in server_addr{}, client_addr{};// Structs for server + client addresses
     server_addr.sin_family = AF_INET;//ipv4
     server_addr.sin_addr.s_addr = INADDR_ANY; // We accept connections on any  IP
     server_addr.sin_port = htons(PORT); // Changing port no. to network byte order

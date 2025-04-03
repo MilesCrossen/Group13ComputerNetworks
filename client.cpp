@@ -336,6 +336,12 @@ void requestData(int port, std::string requestMessage) { // For sending normal d
 int main() {
     WSADATA wsaData; // This inits winsock
     int wsaerr = WSAStartup(MAKEWORD(2, 2), &wsaData); // More winsock spamming
+    std::cout << "Enter password: \n";
+    std::string userPassword;
+    std::getline(std::cin,userPassword);
+    if (userPassword != "group_13") { // Basic authentication
+        return 1;
+    }
 
     // This is our earth/control center interface
     std::cout << "Rover ready to send telemetry data via relay. Available commands:\n";
@@ -351,6 +357,7 @@ int main() {
         std::string input;
         std::getline(std::cin, input); // and read...
         std::smatch matches;
+
 
         if (input == "rock") requestData(PORT_ROCK, "REQ ROCK_TYPE");
         else if (input == "temp") requestData(PORT_TEMP, "REQ TEMP");

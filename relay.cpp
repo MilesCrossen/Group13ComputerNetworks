@@ -220,6 +220,20 @@ void relayData(int relayPort, int serverPort) {
 }
 
 int main() {
+    const std::string password = "group_13";
+    std::string password_entered;
+
+    std::cout << "Enter the password to begin: ";
+    std::cin >> password_entered;
+
+    if (password_entered != password) {
+        std::cout << "Access denied\n";
+        return 1;
+    }
+
+    std::cout << "Password correct.... starting relay....\n";
+
+
     WSADATA wsaData;
     int wsaerr = WSAStartup(MAKEWORD(2, 2), &wsaData); // Initialise winsock
     std::thread timeThread(updateTime); // Thread for time... used for determining if communication is open or not

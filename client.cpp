@@ -10,6 +10,7 @@
 #include <vector> // For storing image data
 #include <map> // For tracking chunks
 #include <regex> // For input parsing
+#include <sstream> // For string stream processing
 #pragma comment(lib, "ws2_32.lib") // Link Winsock library for networking
 #define RELAY_IP "127.0.0.1" // Server IP
 #define PORT_ROCK 5000 // Port spammm
@@ -19,6 +20,7 @@
 #define PORT_IMAGE 5004 // New port for image requests
 #define PORT_DEGREE 5005 // Port for direction controls
 #define PORT_SPEED 5006 // Port for speed controls
+#define PORT_ROVER_COMMAND 5557 // Rover-rover commands
 #define BUFFER_SIZE 256 // This is all explained in other files tbh idk why I'd explain it again
 #define MAX_RETRIES 5 // Retry count for lost packets
 #define IMAGE_BUFFER_SIZE 2048// Larger buffer for image data
@@ -34,6 +36,41 @@ std::map<int, int> portSeqNums = {//use works
     {PORT_DEGREE, 0},
     {PORT_SPEED, 0}
 };
+
+void sendRoverCommand(const std::string& command) { //Rover-rover commands
+    SOCKET command_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    int timeout = TIMEOUT;
+    setsockopt(command_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+
+    struct sockaddr_in relay_addr; // Relay address
+    memset(&relay_addr, 0, sizeof(relay_addr)); // memset sets sizeof(relay_addr) bytes to 0 starting from &relayy_addr
+    relay_addr.sin_family = AF_INET;
+    relay_addr.sin_port = htons(PORT_ROVER_COMMAND);
+
+    if(inet_pton(AF_INET, RELAY_IP, &relay_addr.sin_addr) <= 0) { // checks if result is valid
+        std::cerr << "[ERROR] Invalid relay address\n";
+        closesocket(command_socket);
+        return;
+    }
+
+    if(sendto(command_socket, command.c_str(), command.length(), 0, (struct sockaddr*)&relay_addr, sizeof(relay_addr)) == SOCKET_ERROR) {
+        std::cerr << "[ERROR] Failed to send rover command: " << WSAGetLastError() << std::endl;
+        closesocket(command_socket);
+        return;
+    } //
+    std::cout << "[SENT] Rover command: " << command << std::endl;
+    char buffer[BUFFER_SIZE]; // for waiting for ACK
+    int relay_len = sizeof(relay_addr);
+    int received = recvfrom(command_socket, buffer, BUFFER_SIZE - 1, 0, (struct sockaddr*)&relay_addr, &relay_len);
+    if (received > 0) { // Received?
+        buffer[received] = '\0'; // Termination
+        std::cout << "[RECEIVED] Rover command response: " << buffer << std::endl;
+    } else {
+        std::cerr << "[TIMEOUT] No response from rover command\n";
+    }
+
+    closesocket(command_socket);
+}
 
 void requestImage(){
     SOCKET sock_fd;
@@ -225,7 +262,6 @@ void requestImage(){
     std::cout << "[SUCCESS] saved as 'received_image.jpg'" << std::endl; closesocket(sock_fd);
 }
 
-// Function for sending data to the rover (like speed and direction commands)
 void sendData(int port, std::string dataToSend) {
     SOCKET sock_fd;
     struct sockaddr_in relay_addr;
@@ -352,6 +388,8 @@ int main() {
     std::cout << "'image' -> Request lunar surface image\n";
     std::cout << "'degree, integer' -> Change direction of the buggy in degrees\n";
     std::cout << "'speed, integer' -> Change speed of buggy by m/s\n";
+    std::cout << "'broadcast <message>' -> Broadcast message to all rovers in vicinity\n";
+    std::cout << "'send <ip> <message>' -> Send direct message to a specific rover\n";
 
     while (true) { // Listen until user closes programme, here we process user commands, call functions etc
         std::string input;
@@ -366,6 +404,22 @@ int main() {
         else if (input == "image") requestImage();
         else if (std::regex_match(input, matches, std::regex(R"(degree\s*,\s*(-?\d+))"))) sendData(PORT_DEGREE, matches[1].str());
         else if (std::regex_match(input, matches, std::regex(R"(speed\s*,\s*(-?\d+))"))) sendData(PORT_SPEED, matches[1].str());
+        else if (input.substr(0, 9) == "broadcast" && input.length() > 10) {
+            std::string message = input.substr(10); // Get message after "broadcast ", position 10
+            sendRoverCommand("BROADCAST:" + message);
+        }
+        else if (input.substr(0, 4) == "send" && input.length() > 5) {
+            std::istringstream iss(input.substr(5)); // Skip "send" if we are getting msg to specific rovers
+            std::string ip;
+            iss >> ip; // get IP
+            std::string message; // Rest of string is msg
+            std::getline(iss >> std::ws, message); // input
+            if (!ip.empty() && !message.empty()) { // If valid IP
+                sendRoverCommand("SEND:" + ip + ":" + message);
+            } else {
+                std::cout << "[ERROR] Send command format: send <ip> <message>\n";
+            }
+        }
         else std::cout << "[ERROR] Unknown command\n";
     }
 }

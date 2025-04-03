@@ -16,13 +16,16 @@
 #define RELAY_PORT_MONOLITH 5002
 #define RELAY_PORT_RADIATION 5003
 #define RELAY_PORT_IMAGE 5004
-#define RELAY_PORT_DEGREE 5005 // New port for direction control
-#define RELAY_PORT_SPEED 5006  // New port for speed control
+#define RELAY_PORT_DEGREE 5005 // 5005-5006 are Cristians ports
+#define RELAY_PORT_SPEED 5006
+#define PORT_ROVER_DIRECT 5555 // Direct rover-to-rover communication
+#define PORT_ROVER_COMMAND 5556 // Handling rover commands from earth
+#define RELAY_PORT_ROVER_COMMAND 5557 // Rover-to-rover commands
 #define SERVER_IP "127.0.0.1" // SERVER IP
 #define BUFFER_SIZE 256
 #define IMAGE_BUFFER_SIZE 2048
 #define PACKET_DROP_RATE 0 // adjustable loss rate
-#define PACKET_DELAY_MS 10 // Delay in ms
+#define PACKET_DELAY_MS 500 // Delay in ms
 int timePassRate = 0; // How many mins pass per IRL second?
 int current_time = 0; // Simulated time in minutes, increments quicker than IRL
 
@@ -39,8 +42,68 @@ void updateTime() {
     }
 }
 
-//BELOW MOSTLY FOR FORWARDING TO SERVER
+void relayRoverCommand() { // Relaying rover-to-rover commands
+    SOCKET relay_socket;
+    struct sockaddr_in relay_addr{}, server_addr{}, client_addr{};
+    char buffer[BUFFER_SIZE];
+    int client_len = sizeof(client_addr), server_len = sizeof(server_addr);
+    relay_socket = socket(AF_INET, SOCK_DGRAM, 0);//UDP socket
+    relay_addr.sin_family = AF_INET;
+    relay_addr.sin_addr.s_addr = INADDR_ANY;
+    relay_addr.sin_port = htons(RELAY_PORT_ROVER_COMMAND);
 
+    if(bind(relay_socket, (struct sockaddr*)&relay_addr, sizeof(relay_addr)) == SOCKET_ERROR) {
+        std::cerr << "[ERROR] Bind failed on rover command relay port: " << WSAGetLastError() << std::endl;
+        closesocket(relay_socket);
+        return;
+    } // Binding
+    std::cout << "[INFO] Rover command relay listening on port " << RELAY_PORT_ROVER_COMMAND << "...\n";
+    while (true) {
+        int bytes_received = recvfrom(relay_socket, buffer, BUFFER_SIZE - 1, 0, (struct sockaddr*)&client_addr, &client_len);
+        if (bytes_received > 0) {
+            buffer[bytes_received] = '\0';
+            if (isCommunicationWindowOpen()) {
+                std::cout << "[CLIENT -> RELAY] Rover command: " << buffer << " (Port " << RELAY_PORT_ROVER_COMMAND << ") (Time: " << current_time << " min)\n";
+
+                server_addr.sin_family = AF_INET; // Server address to forward to
+                server_addr.sin_port = htons(PORT_ROVER_DIRECT + 1); // 5556 (Same as in server.cpp)
+                inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
+                std::this_thread::sleep_for(std::chrono::milliseconds(PACKET_DELAY_MS));
+                float randomValue = static_cast<float>(rand()) / RAND_MAX;
+                if (randomValue < PACKET_DROP_RATE) {
+                    std::cout << "[DROPPED] Rover command dropped before reaching server (Time: "
+                              << current_time << " min)\n";
+                    continue;
+                }
+
+                sendto(relay_socket, buffer, bytes_received, 0,(struct sockaddr*)&server_addr, sizeof(server_addr)); //send to server
+                bytes_received = recvfrom(relay_socket, buffer, BUFFER_SIZE - 1, 0, (struct sockaddr*)&server_addr, &server_len);
+// Await response
+                if (bytes_received > 0) {
+                    buffer[bytes_received] = '\0';
+                    std::cout << "[SERVER -> RELAY] Rover command response: " << buffer
+                              << " (Time: " << current_time << " min)\n";
+                    std::this_thread::sleep_for(std::chrono::milliseconds(PACKET_DELAY_MS));
+                    randomValue = static_cast<float>(rand()) / RAND_MAX; // Return delay + packet loss
+                    if (randomValue < PACKET_DROP_RATE) {
+                        std::cout << "[DROPPED] Response dropped before reaching client (Time: " << current_time << " min)\n";
+                        continue;
+                    }
+
+                    sendto(relay_socket, buffer, bytes_received, 0, (struct sockaddr*)&client_addr, client_len);
+                    //Response back to client now
+                }
+            } else {
+                std::cout << "[BLOCKED] Rover command rejected. Satellite out of range. (Time: "<< current_time << " min)\n";
+                std::string response = "BLOCKED: Satellite out of range";
+                sendto(relay_socket, response.c_str(), response.length(), 0,
+                      (struct sockaddr*)&client_addr, client_len);
+            }
+        }
+    }
+}
+
+//BELOW MOSTLY FOR FORWARDING TO SERVER
 void relayImageData(int relayPort, int serverPort){ // For relaying image data between earth and rover
     SOCKET relay_socket;
     struct sockaddr_in relay_addr{}, server_addr{}, client_addr{}; // These store addresses for each stage
@@ -244,6 +307,7 @@ int main() {
     std::thread monolithRelay(relayData, RELAY_PORT_MONOLITH, 12347);
     std::thread radiationRelay(relayData, RELAY_PORT_RADIATION, 12348);
     std::thread imageRelay(relayImageData, RELAY_PORT_IMAGE, 12349); // Thread for image relay
+    std::thread roverCommandRelay(relayRoverCommand); // New thread for rover-to-rover commands
 
     timeThread.detach(); // detach means its run in the background i.e. non blocking
     speedRelay.join();
@@ -253,6 +317,7 @@ int main() {
     monolithRelay.join();
     radiationRelay.join();
     imageRelay.join();
+    roverCommandRelay.join(); // Join the rover command relay thread
 
     WSACleanup();
     return 0;// Then... clean + exit

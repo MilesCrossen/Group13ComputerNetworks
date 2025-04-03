@@ -9,6 +9,7 @@
 #include <fstream> // For writing image file, file stream
 #include <vector> // For storing image data
 #include <map> // For tracking chunks
+#include <regex> // For input parsing
 #pragma comment(lib, "ws2_32.lib") // Link Winsock library for networking
 #define RELAY_IP "127.0.0.1" // Server IP
 #define PORT_ROCK 5000 // Port spammm
@@ -16,6 +17,8 @@
 #define PORT_MONOLITH 5002 //pdf so that's what we do
 #define PORT_RADIATION 5003
 #define PORT_IMAGE 5004 // New port for image requests
+#define PORT_DEGREE 5005 // Port for direction controls
+#define PORT_SPEED 5006 // Port for speed controls
 #define BUFFER_SIZE 256 // This is all explained in other files tbh idk why I'd explain it again
 #define MAX_RETRIES 5 // Retry count for lost packets
 #define IMAGE_BUFFER_SIZE 2048// Larger buffer for image data
@@ -27,7 +30,9 @@ std::map<int, int> portSeqNums = {//use works
     {PORT_TEMP, 0},
     {PORT_MONOLITH, 0},
     {PORT_RADIATION, 0},
-    {PORT_IMAGE, 0}
+    {PORT_IMAGE, 0},
+    {PORT_DEGREE, 0},
+    {PORT_SPEED, 0}
 };
 
 void requestImage(){
@@ -160,7 +165,7 @@ void requestImage(){
                     }
                 }
 
-                if (header_end >0) { // Kind of a check if there's data bcs it checks if there's space after CHUNK
+                if (header_end > 0) { // Kind of a check if there's data bcs it checks if there's space after CHUNK
                     std::string chunk_info = header_str.substr(6, header_end -7); // Extracts fractional completion
                     size_t slash_pos = chunk_info.find('/'); // Format is like "3/20" meaning chunk 3 of 20 total
                     if (slash_pos != std::string::npos) {
@@ -220,6 +225,57 @@ void requestImage(){
     std::cout << "[SUCCESS] saved as 'received_image.jpg'" << std::endl; closesocket(sock_fd);
 }
 
+// Function for sending data to the rover (like speed and direction commands)
+void sendData(int port, std::string dataToSend) {
+    SOCKET sock_fd;
+    struct sockaddr_in relay_addr;
+    char buffer[BUFFER_SIZE];
+
+    sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock_fd == INVALID_SOCKET) {
+        std::cerr << "[ERROR] Socket creation failed on port " << port << ": " << WSAGetLastError() << std::endl;
+        return;
+    }
+    int timeout = TIMEOUT;
+    setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+    relay_addr.sin_family = AF_INET;
+    relay_addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, RELAY_IP, &relay_addr.sin_addr) <= 0){
+        std::cerr << "[ERROR] Invalid address for relay\n";
+        closesocket(sock_fd);
+        return;
+    }
+    std::string packet = "SEQ " + std::to_string(portSeqNums[port]) + " | " + dataToSend;
+    int retries = 0;
+    bool acked = false;
+
+    while (retries < MAX_RETRIES && !acked) { // Stop+wait
+        sendto(sock_fd, packet.c_str(), packet.length(), 0, (struct sockaddr*)&relay_addr, sizeof(relay_addr));
+        std::cout << "[Sent] " << packet << " on port " << port << std::endl;
+        int relay_len = sizeof(relay_addr);
+        int bytes_received = recvfrom(sock_fd, buffer, BUFFER_SIZE -1, 0,  (struct sockaddr*)&relay_addr, &relay_len);
+
+        if (bytes_received > 0) { // Got a response?
+            buffer[bytes_received] = '\0'; // NUll terminator to end
+            std::string response(buffer);
+
+            if(response.rfind("ACK " + std::to_string(portSeqNums[port]), 0) == 0) {// ACK verification like in above func
+                std::cout << "[Server Response via Relay] " << response << std::endl;
+                acked = true;
+                portSeqNums[port] = 1 - portSeqNums[port]; // Flip sequence number @ this port
+            } else{
+                // Old/duplicate packet or wrong seq number?
+                std::cout << "[IGNORED] Unexpected ACK or corrupted packet: " << response << std::endl;
+            }
+        } else{
+            std::cout << "[TIMEOUT] No ACK received, retrying... (Attempt "<< retries + 1 << ")\n"; // Timeout msg
+            retries++; // Still counted as retry tho
+        }
+    }
+
+    if (!acked) std::cerr << "[ERROR] Max retries reached. No valid response from server.\n";//No ack after a bunch of retries
+    closesocket(sock_fd);
+}
 
 // MUCH OF WHAT YOU SEE BELOW IS JUST SIMILAR LOGIC TO THE ABOVE FUNCTION SO ISN'T SUPER
 //IMPORTANT TO COMMENT
@@ -288,17 +344,21 @@ int main() {
     std::cout << "'monolith' -> Request monolith presence\n";
     std::cout << "'radiation' -> Request radiation levels\n";
     std::cout << "'image' -> Request lunar surface image\n";
-
+    std::cout << "'degree, integer' -> Change direction of the buggy in degrees\n";
+    std::cout << "'speed, integer' -> Change speed of buggy by m/s\n";
 
     while (true) { // Listen until user closes programme, here we process user commands, call functions etc
         std::string input;
         std::getline(std::cin, input); // and read...
+        std::smatch matches;
 
         if (input == "rock") requestData(PORT_ROCK, "REQ ROCK_TYPE");
         else if (input == "temp") requestData(PORT_TEMP, "REQ TEMP");
         else if (input == "monolith") requestData(PORT_MONOLITH, "REQ MONOLITH");
         else if (input == "radiation") requestData(PORT_RADIATION, "REQ RADIATION");
         else if (input == "image") requestImage();
+        else if (std::regex_match(input, matches, std::regex(R"(degree\s*,\s*(-?\d+))"))) sendData(PORT_DEGREE, matches[1].str());
+        else if (std::regex_match(input, matches, std::regex(R"(speed\s*,\s*(-?\d+))"))) sendData(PORT_SPEED, matches[1].str());
         else std::cout << "[ERROR] Unknown command\n";
     }
 }

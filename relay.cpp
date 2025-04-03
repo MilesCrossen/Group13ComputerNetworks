@@ -16,6 +16,8 @@
 #define RELAY_PORT_MONOLITH 5002
 #define RELAY_PORT_RADIATION 5003
 #define RELAY_PORT_IMAGE 5004
+#define RELAY_PORT_DEGREE 5005 // New port for direction control
+#define RELAY_PORT_SPEED 5006  // New port for speed control
 #define SERVER_IP "127.0.0.1" // SERVER IP
 #define BUFFER_SIZE 256
 #define IMAGE_BUFFER_SIZE 2048
@@ -25,8 +27,6 @@ int timePassRate = 0; // How many mins pass per IRL second?
 int current_time = 0; // Simulated time in minutes, increments quicker than IRL
 
 //JUST FOR CLARIFICATION, PORTS 500x RECEIVE REQUESTS FROM THE CLIENT, PORTS 1234x-12350 COMMUNICATE W/SERVER
-
-
 bool isCommunicationWindowOpen() {
     int cycle_time = current_time %(12 *60 + 50 + 12 * 60 + 50); // Full cycle = 25h 40m
     return cycle_time< (12 * 60 + 50); // First 12h 50m = open for communication, next 12h 50 -> closed
@@ -223,13 +223,17 @@ int main() {
     WSADATA wsaData;
     int wsaerr = WSAStartup(MAKEWORD(2, 2), &wsaData); // Initialise winsock
     std::thread timeThread(updateTime); // Thread for time... used for determining if communication is open or not
+    std::thread speedRelay(relayData, RELAY_PORT_SPEED, 12343); // New thread for speed control
+    std::thread degreeRelay(relayData, RELAY_PORT_DEGREE, 12344); // New thread for degree control
     std::thread rockRelay(relayData, RELAY_PORT_ROCK, 12345); // Relay threads for each data type
     std::thread tempRelay(relayData, RELAY_PORT_TEMP, 12346);
     std::thread monolithRelay(relayData, RELAY_PORT_MONOLITH, 12347);
     std::thread radiationRelay(relayData, RELAY_PORT_RADIATION, 12348);
-    std::thread imageRelay(relayImageData, RELAY_PORT_IMAGE, 12349); // New thread for image relay
+    std::thread imageRelay(relayImageData, RELAY_PORT_IMAGE, 12349); // Thread for image relay
 
     timeThread.detach(); // detach means its run in the background i.e. non blocking
+    speedRelay.join();
+    degreeRelay.join();
     rockRelay.join(); // join means we wait for the threads to finish, but they dont bcs theyre listening infinitely
     tempRelay.join();
     monolithRelay.join();

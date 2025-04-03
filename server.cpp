@@ -13,6 +13,8 @@
 #include <vector>
 #include <map>
 #pragma comment(lib, "ws2_32.lib")
+#define PORT_SPEED 12343
+#define PORT_DEGREE 12344
 #define PORT_ROCK 12345
 #define PORT_TEMP 12346
 #define PORT_MONOLITH 12347
@@ -21,10 +23,48 @@
 #define BUFFER_SIZE 256
 #define CHUNK_SIZE 512
 #define IMAGE_MAX_RETRIES 5
+
 //BELOW PART IS FOR HANDLING IMAGES
+std::map<int, int> portSeqNums = {
+    {PORT_ROCK, 0},
+    {PORT_TEMP, 0},
+    {PORT_MONOLITH, 0},
+    {PORT_RADIATION, 0},
+    {PORT_IMAGE, 0},
+    {PORT_DEGREE, 0},
+    {PORT_SPEED, 0}
+};
+
+int ORIENTATION = 0;
+int SPEED = 0;
+void changeDir(int degrees) { // This + next are Cristian's functions
+    ORIENTATION = ORIENTATION + degrees;
+    std::cout << "Direction changed by " << degrees << " degrees" << std::endl;
+    std::cout << "Current direction = " << ORIENTATION << " degrees" << std::endl;
+}
+
+void changeSpeed(int speed) {
+    SPEED = SPEED + speed;
+    std::cout << "Speed changed by " << speed << " m/s" << std::endl;
+    std::cout << "Current speed = " << SPEED << " m/s" << std::endl;
+}
+
 void handleImageRequest(SOCKET server_fd, struct sockaddr_in client_addr, int client_len, int seq_num) {
-    std::string image_path = "moon_image.jpg"; // Image path to be sent
-    std::ifstream file(image_path, std::ios::binary); // Reading the file
+    std::string image_path; //Image depends on orientation
+    int normalized_orientation = ((ORIENTATION % 360) + 360) % 360; // Lock between 0 and 359 degrees
+    if (normalized_orientation >= 0 && normalized_orientation < 90) { //and make image depend on orientation
+        image_path = "moon_image1.jpg";
+    } else if (normalized_orientation >= 90 && normalized_orientation < 180) {
+        image_path = "moon_image2.jpg";
+    } else if (normalized_orientation >= 180 && normalized_orientation < 270) {
+        image_path = "moon_image3.jpg";
+    } else {
+        image_path = "moon_image4.jpg";
+    }
+
+
+    std::cout << "[INFO] Sending image for orientation " << normalized_orientation << " degrees: " << image_path << std::endl;
+    std::ifstream file(image_path, std::ios::binary);
     if (!file){
         std::string error_msg = "ACK " + std::to_string(seq_num) + " | IMAGE: ERROR_LOADING"; // Error msg format
         sendto(server_fd, error_msg.c_str(), error_msg.length(), 0, (struct sockaddr*)&client_addr, client_len);
@@ -165,8 +205,7 @@ void handleImageRequest(SOCKET server_fd, struct sockaddr_in client_addr, int cl
     std::cout << "[INFO] Image transfer complete" << std::endl;// WE ARE DONE
 }
 
-//HANDLES REQUEST
-void handleRequest(int port) {
+void handleRequest(int port) { //HANDLES REQUEST
     SOCKET server_fd; // Similar to everything in client.cpp
     struct sockaddr_in server_addr{}, client_addr{};
     char buffer[BUFFER_SIZE];
@@ -216,6 +255,30 @@ void handleRequest(int port) {
                     float radiation = static_cast<float>(rand() % 250 + 10) / 100.0;
                     response = "ACK " + std::to_string(expectedSeqNum) + " | RADIATION: " + std::to_string(radiation) +" mSv";
                 }
+                else if (port == PORT_DEGREE) {
+                    std::string data = received; // Get degree value from the message
+                    int degree;
+                    size_t last_space = data.find_last_of(' ');
+                    if (last_space != std::string::npos) {
+                        std::string last_num_str = data.substr(last_space + 1);
+                        degree = std::stoi(last_num_str);
+                        std::cout << "Extracted number: " << degree << std::endl;
+                    }
+                    changeDir(degree);
+                    response = "ACK " + std::to_string(expectedSeqNum) + " | DEGREES ALTERED BY: " + std::to_string(degree) + ", current orientation = " + std::to_string(ORIENTATION) + " degrees";
+                }
+                else if (port == PORT_SPEED) {
+                    std::string data = received; // Get speed val
+                    int speed;
+                    size_t last_space = data.find_last_of(' ');
+                    if (last_space != std::string::npos) {
+                        std::string last_num_str = data.substr(last_space + 1);
+                        speed = std::stoi(last_num_str);
+                        std::cout << "Extracted number: " << speed << std::endl;
+                    }
+                    changeSpeed(speed);
+                    response = "ACK " + std::to_string(expectedSeqNum) + " | SPEED ALTERED BY: " + std::to_string(speed) + ", current speed = " + std::to_string(SPEED) + " m/s";
+                }
                 else if (port == PORT_IMAGE) { // Handle image req separately
                     handleImageRequest(server_fd, client_addr, client_len, expectedSeqNum);
                     expectedSeqNum = 1 - expectedSeqNum; //flipping...
@@ -245,7 +308,11 @@ int main() {
     std::thread monolithThread(handleRequest, PORT_MONOLITH);
     std::thread radiationThread(handleRequest, PORT_RADIATION);
     std::thread imageThread(handleRequest, PORT_IMAGE);
+    std::thread degreeThread(handleRequest, PORT_DEGREE); // Cristian's threads
+    std::thread speedThread(handleRequest, PORT_SPEED);
 
+    speedThread.join();
+    degreeThread.join();
     rockThread.join();
     tempThread.join();
     monolithThread.join();

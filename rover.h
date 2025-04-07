@@ -1,14 +1,11 @@
 //ROVER CLASS
-
 #ifndef ROVER_H
 #define ROVER_H
 #include <iostream>
 #include <string>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-
 #pragma comment(lib, "ws2_32.lib")
-
 class Rover {
 private:
     int broadcast_port;
@@ -25,5 +22,4 @@ public:
     bool startListening(); // Start listening for connections
     void stopListening(); // Stopl istening
 };
-
 #endif // ROVER_H

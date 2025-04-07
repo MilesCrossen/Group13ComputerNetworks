@@ -46,7 +46,6 @@ void sendRoverCommand(const std::string& command) { //Rover-rover commands
     memset(&relay_addr, 0, sizeof(relay_addr)); // memset sets sizeof(relay_addr) bytes to 0 starting from &relayy_addr
     relay_addr.sin_family = AF_INET;
     relay_addr.sin_port = htons(PORT_ROVER_COMMAND);
-
     if(inet_pton(AF_INET, RELAY_IP, &relay_addr.sin_addr) <= 0) { // checks if result is valid
         std::cerr << "[ERROR] Invalid relay address\n";
         closesocket(command_socket);
@@ -159,6 +158,7 @@ void requestImage(){
 
 
 
+
         if (bytes_received > 0) { transfer_timeouts = 0;  // Got sth from the relay, resets timeout
             if (bytes_received < 20) { // Small message, might be the completion signal
                 buffer[bytes_received] = '\0'; // Termination
@@ -257,9 +257,7 @@ void requestImage(){
             }
         }
     }
-
     output_file.close();
-    std::cout << "[SUCCESS] saved as 'received_image.jpg'" << std::endl; closesocket(sock_fd);
 }
 
 void sendData(int port, std::string dataToSend) {
@@ -273,7 +271,7 @@ void sendData(int port, std::string dataToSend) {
         return;
     }
     int timeout = TIMEOUT;
-    setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+    setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO,(const char*)&timeout, sizeof(timeout));
     relay_addr.sin_family = AF_INET;
     relay_addr.sin_port = htons(port);
     if (inet_pton(AF_INET, RELAY_IP, &relay_addr.sin_addr) <= 0){
@@ -281,7 +279,7 @@ void sendData(int port, std::string dataToSend) {
         closesocket(sock_fd);
         return;
     }
-    std::string packet = "SEQ " + std::to_string(portSeqNums[port]) + " | " + dataToSend;
+    std::string packet = "SEQ " +std::to_string(portSeqNums[port]) + " | " + dataToSend;
     int retries = 0;
     bool acked = false;
 
@@ -290,11 +288,9 @@ void sendData(int port, std::string dataToSend) {
         std::cout << "[Sent] " << packet << " on port " << port << std::endl;
         int relay_len = sizeof(relay_addr);
         int bytes_received = recvfrom(sock_fd, buffer, BUFFER_SIZE -1, 0,  (struct sockaddr*)&relay_addr, &relay_len);
-
         if (bytes_received > 0) { // Got a response?
             buffer[bytes_received] = '\0'; // NUll terminator to end
             std::string response(buffer);
-
             if(response.rfind("ACK " + std::to_string(portSeqNums[port]), 0) == 0) {// ACK verification like in above func
                 std::cout << "[Server Response via Relay] " << response << std::endl;
                 acked = true;
@@ -329,6 +325,7 @@ void requestData(int port, std::string requestMessage) { // For sending normal d
     setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
 
 
+
     relay_addr.sin_family = AF_INET;
     relay_addr.sin_port = htons(port); // Port -> network byte order, described in prev function for image transfer too
     if (inet_pton(AF_INET, RELAY_IP, &relay_addr.sin_addr) <= 0){ // Relay IP conversion..
@@ -340,7 +337,6 @@ void requestData(int port, std::string requestMessage) { // For sending normal d
     std::string packet = "SEQ " + std::to_string(portSeqNums[port]) + " | " + requestMessage;
     int retries = 0;
     bool acked = false;
-
     while (retries < MAX_RETRIES && !acked) { // Stop+wait
         sendto(sock_fd, packet.c_str(), packet.length(), 0, (struct sockaddr*)&relay_addr, sizeof(relay_addr));
         std::cout << "[Sent] " << packet << " on port " << port << std::endl;
@@ -415,11 +411,11 @@ int main() {
             std::string message; // Rest of string is msg
             std::getline(iss >> std::ws, message); // input
             if (!ip.empty() && !message.empty()) { // If valid IP
-                sendRoverCommand("SEND:" + ip + ":" + message);
+                sendRoverCommand("SEND:" + ip + ":"+message);
             } else {
                 std::cout << "[ERROR] Send command format: send <ip> <message>\n";
             }
         }
-        else std::cout << "[ERROR] Unknown command\n";
+        else std::cout << "ERROR Unknown command\n";
     }
 }
